@@ -1,0 +1,156 @@
+# GitHub Actions CI/CD Workflow for Angular App
+# Deploys to GitHub Pages with test coverage validation
+name: Build, Test & Deploy to GitHub Pages
+
+# Trigger the workflow on push to main branch
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # Allow manual trigger
+
+# Set GITHUB_TOKEN permissions for GitHub Pages deployment
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  # Job 1: Build, Test & Validate Coverage
+  test-and-build:
+    name: Test Coverage & Build
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Step 1: Checkout the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      # Step 2: Setup Node.js environment
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          
+      # Step 3: Cache node_modules for faster builds
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+            
+      # Step 4: Install dependencies
+      - name: Install dependencies
+        run: npm ci
+        
+      # Step 5: Run tests with coverage (critical validation step)
+      - name: Run Jest tests with coverage
+        run: npm run test -- --coverage --watchAll=false
+        
+      # Step 6: Parse coverage and validate 80% threshold
+      - name: Validate test coverage threshold (80%)
+        run: |
+          # Extract coverage percentage from Jest output
+          COVERAGE=$(npm run test -- --coverage --watchAll=false --silent | grep -E "All files" | awk '{print $10}' | sed 's/%//')
+          
+          echo "Current test coverage: ${COVERAGE}%"
+          
+          # Check if coverage meets 80% threshold
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "❌ DEPLOYMENT FAILED: Test coverage is ${COVERAGE}%, which is below the required 80% threshold!"
+            echo "Please improve test coverage before deploying."
+            exit 1
+          else
+            echo "✅ Test coverage validation passed: ${COVERAGE}% >= 80%"
+          fi
+        shell: bash
+        
+      # Step 7: Upload coverage reports as artifacts
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: coverage/
+          retention-days: 30
+          
+      # Step 8: Build Angular application for production
+      - name: Build Angular app
+        run: npm run build
+        
+      # Step 9: Upload build artifacts for deployment
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-files
+          path: dist/
+          retention-days: 1
+
+  # Job 2: Deploy to GitHub Pages (only runs if tests pass)
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    
+    # Deploy to the github-pages environment
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+      
+    steps:
+      # Step 1: Download build artifacts from previous job
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-files
+          path: dist/
+          
+      # Step 2: Setup GitHub Pages
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v4
+        
+      # Step 3: Upload to GitHub Pages
+      - name: Upload to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/testing-coverage-check-before-deploy6/
+          
+      # Step 4: Deploy to GitHub Pages
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Job 3: Deployment Status Notification
+  notify:
+    name: Deployment Status
+    needs: [test-and-build, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Deployment Success Notification
+        if: needs.deploy.result == 'success'
+        run: |
+          echo "🚀 Deployment completed successfully!"
+          echo "✅ All tests passed with coverage >= 80%"
+          echo "✅ Angular app built successfully"
+          echo "✅ Deployed to GitHub Pages"
+          echo ""
+          echo "🌐 Your app is live at: https://aishwaryakulkarni1801.github.io/testingCoverageCheckBeforeDeploy6/"
+          
+      - name: Deployment Failure Notification
+        if: needs.test-and-build.result == 'failure'
+        run: |
+          echo "❌ Deployment failed during testing phase!"
+          echo "Please check the following:"
+          echo "  - All tests are passing"
+          echo "  - Test coverage is at least 80%"
+          echo "  - No build errors occurred"
+          echo ""
+          echo "Fix the issues and push again to retry deployment."
